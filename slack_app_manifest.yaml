@@ -1,0 +1,33 @@
+display_information:
+  name: GCI Jam
+  description: Take any Slack conversation to a Generative Collective Intelligence Jam
+  background_color: "#1a1a2e"
+
+features:
+  bot_user:
+    display_name: GCI Jam
+    always_online: true
+  slash_commands:
+    - command: /jam
+      description: Create a GCI Jam from this channel's conversation
+      usage_hint: '"question to explore" | connect'
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+      - users:read
+      - users:read.email
+      - chat:write
+      - commands
+
+settings:
+  socket_mode_enabled: true
+  token_rotation_enabled: false
+  org_deploy_enabled: false
+  interactivity:
+    is_enabled: false
