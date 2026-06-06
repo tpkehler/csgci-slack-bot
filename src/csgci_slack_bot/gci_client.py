@@ -12,7 +12,7 @@ import httpx
 
 GCI_API_BASE = os.environ.get("GCI_API_BASE", "https://csgcip.onrender.com").rstrip("/")
 GCI_API_KEY  = os.environ.get("GCI_API_KEY", "")
-CSWEB_BASE   = os.environ.get("CSWEB_BASE_URL", "https://crowdsmart.io").rstrip("/")
+CSWEB_BASE   = os.environ.get("CSWEB_BASE_URL", "https://collectivereasoningcommons.com").rstrip("/")
 
 
 class GCIClient:

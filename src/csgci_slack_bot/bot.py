@@ -117,7 +117,7 @@ async def handle_jam_command(ack, command, client, respond):
 # ── /jam connect ──────────────────────────────────────────────────────────────
 
 async def _handle_connect(user_id: str, client, respond) -> None:
-    csweb = os.environ.get("CSWEB_BASE_URL", "https://crowdsmart.io")
+    csweb = os.environ.get("CSWEB_BASE_URL", "https://collectivereasoningcommons.com")
     connect_url = f"{csweb}/connect/slack?slack_user_id={user_id}"
     try:
         await client.chat_postMessage(
@@ -163,7 +163,7 @@ def _jam_created_blocks(
     n_props: int,
     unmatched_users: list[dict],
 ) -> list[dict]:
-    csweb = os.environ.get("CSWEB_BASE_URL", "https://crowdsmart.io")
+    csweb = os.environ.get("CSWEB_BASE_URL", "https://collectivereasoningcommons.com")
     blocks: list[dict] = [
         {
             "type": "section",
