@@ -65,20 +65,29 @@ async def handle_jam_command(ack, command, client):
         await client.chat_postEphemeral(
             channel=channel,
             user=user_id,
-            text="Please provide a question.\nUsage: `/jam Should we expand into enterprise accounts?`",
+            text="Please provide a question.\nUsage: `/jam Should we send the deck? 20` (20 = last N messages)",
         )
         return
+
+    # Parse optional trailing N: /jam <question> [N]
+    parts = text.rsplit(None, 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        prompt = parts[0].strip()
+        n_messages = min(int(parts[1]), 100)
+    else:
+        prompt = text.strip()
+        n_messages = 100  # default: load up to 100 messages
 
     # Open loading modal immediately — trigger_id expires after 3 seconds
     res = await client.views_open(
         trigger_id=trigger_id,
-        view=_loading_modal(f"Setting up Jam: _{text[:60]}_…"),
+        view=_loading_modal(f"Setting up Jam: _{prompt[:60]}_…"),
     )
     view_id = res["view"]["id"]
 
     # Create jam + build participation modal in background
     asyncio.create_task(
-        _build_jam_modal(view_id, text, channel, user_id, client)
+        _build_jam_modal(view_id, prompt, channel, user_id, client, n_messages)
     )
 
 
@@ -88,9 +97,10 @@ async def _build_jam_modal(
     channel: str,
     user_id: str,
     client,
+    n_messages: int = 100,
 ) -> None:
     try:
-        messages      = await _fetch_channel_messages(channel, client, THREAD_HISTORY_LIMIT)
+        messages      = await _fetch_channel_messages(channel, client, n_messages)
         user_profiles = await _fetch_user_profiles(
             {m["user"] for m in messages if m.get("user")}, client
         )
@@ -113,6 +123,7 @@ async def _build_jam_modal(
             platform="slack",
             messages=gci_messages,
             title=prompt[:80],
+            min_message_length=5,
         )
 
         jam_id    = result.get("jam_id", "")

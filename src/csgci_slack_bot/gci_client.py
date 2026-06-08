@@ -62,7 +62,7 @@ class GCIClient:
         platform: str,
         messages: list[dict],
         title: str = "",
-        min_message_length: int = 30,
+        min_message_length: int = 5,
     ) -> dict:
         """
         Call POST /api/jams/import-from-conversation.
