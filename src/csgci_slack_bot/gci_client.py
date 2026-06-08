@@ -36,7 +36,10 @@ class GCIClient:
                 headers=self._headers,
                 json=body,
             )
-            r.raise_for_status()
+            if not r.is_success:
+                raise RuntimeError(
+                    f"GCI API {r.status_code} on POST {path}: {r.text[:500]}"
+                )
             return r.json()
 
     async def _get(self, path: str, params: dict | None = None) -> Any:
@@ -104,7 +107,7 @@ class GCIClient:
     # ── URL helpers ───────────────────────────────────────────────────────────
 
     def jam_url(self, jam_id: str) -> str:
-        return f"{CSWEB_BASE}/join/{jam_id}"
+        return f"{CSWEB_BASE}/collaborate/{jam_id}"
 
     def claim_url(self, invite_token: str) -> str:
         return f"{CSWEB_BASE}/claim/{invite_token}"
