@@ -12,6 +12,10 @@ features:
       description: Create a GCI Jam from this channel's conversation
       usage_hint: '"question to explore" | connect'
       should_escape: false
+    - command: /cv
+      description: View the Collective Score and query the Collective Voice for a Jam
+      usage_hint: '<jam_id>'
+      should_escape: false
 
 oauth_config:
   scopes:
@@ -26,8 +30,8 @@ oauth_config:
       - commands
 
 settings:
+  interactivity:
+    is_enabled: true
   socket_mode_enabled: true
   token_rotation_enabled: false
   org_deploy_enabled: false
-  interactivity:
-    is_enabled: false

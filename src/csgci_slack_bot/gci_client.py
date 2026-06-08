@@ -104,6 +104,76 @@ class GCIClient:
             },
         )
 
+    # ── Jam questions ─────────────────────────────────────────────────────────
+
+    async def get_questions(self, jam_id: str) -> list[dict]:
+        """GET /api/jams/{jam_id}/questions — returns sorted list of prompt dicts."""
+        data = await self._get(f"/api/jams/{jam_id}/questions")
+        questions = data.get("questions", [])
+        questions.sort(key=lambda q: q.get("order", q.get("prompt_order", 0)))
+        return questions
+
+    # ── Submit a single response ──────────────────────────────────────────────
+
+    async def submit_response(
+        self,
+        *,
+        jam_id: str,
+        participant_id: str,
+        participant_name: str,
+        participant_email: str,
+        prompt_id: str | None,
+        prompt_text: str,
+        probability: float,
+        reasoning: str,
+    ) -> dict:
+        """POST /api/peer-review/multi-question/submit — submit one response."""
+        response_item: dict = {
+            "prompt_order":         0,
+            "prompt_text":          prompt_text,
+            "probability_estimate": probability,
+            "reasoning":            reasoning,
+        }
+        if prompt_id:
+            response_item["prompt_id"] = prompt_id
+
+        return await self._post(
+            "/api/peer-review/multi-question/submit",
+            {
+                "jam_id":            jam_id,
+                "participant_id":    participant_id,
+                "participant_name":  participant_name,
+                "participant_email": participant_email,
+                "responses":         [response_item],
+            },
+            timeout=120.0,
+        )
+
+    # ── BBN / Collective View ─────────────────────────────────────────────────
+
+    async def get_bbn(self, jam_id: str) -> dict:
+        """GET /api/bbn/calculate/{jam_id} — returns 4-layer BBN result."""
+        return await self._get(f"/api/bbn/calculate/{jam_id}")
+
+    # ── Collective Voice ──────────────────────────────────────────────────────
+
+    async def collective_voice_query(
+        self,
+        jam_id: str,
+        question: str,
+        max_sources: int = 5,
+    ) -> dict:
+        """POST /api/collective-voice/query — RAG answer over jam propositions."""
+        return await self._post(
+            "/api/collective-voice/query",
+            {
+                "jam_id":      jam_id,
+                "question":    question,
+                "max_sources": max_sources,
+            },
+            timeout=60.0,
+        )
+
     # ── URL helpers ───────────────────────────────────────────────────────────
 
     def jam_url(self, jam_id: str) -> str:
