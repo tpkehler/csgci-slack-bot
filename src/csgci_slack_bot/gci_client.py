@@ -127,27 +127,22 @@ class GCIClient:
         probability: float,
         reasoning: str,
     ) -> dict:
-        """POST /api/peer-review/multi-question/submit — submit one response."""
-        response_item: dict = {
-            "prompt_order":         0,
-            "prompt_text":          prompt_text,
+        """POST /api/user-responses/submit — submit one response (direct Supabase write)."""
+        body: dict = {
+            "jam_id":               jam_id,
+            "template_id":          jam_id,
+            "user_id":              participant_id,
+            "user_name":            participant_name,
+            "user_email":           participant_email,
             "probability_estimate": probability,
-            "reasoning":            reasoning,
+            "reasoning_text":       reasoning,
+            "question_text":        prompt_text,
+            "question_order":       0,
         }
         if prompt_id:
-            response_item["prompt_id"] = prompt_id
+            body["question_id"] = prompt_id
 
-        return await self._post(
-            "/api/peer-review/multi-question/submit",
-            {
-                "jam_id":            jam_id,
-                "participant_id":    participant_id,
-                "participant_name":  participant_name,
-                "participant_email": participant_email,
-                "responses":         [response_item],
-            },
-            timeout=120.0,
-        )
+        return await self._post("/api/user-responses/submit", body, timeout=120.0)
 
     # ── BBN / Collective View ─────────────────────────────────────────────────
 
