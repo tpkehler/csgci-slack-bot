@@ -129,9 +129,12 @@ async def _build_jam_modal(
         jam_id      = result.get("jam_id", "")
         jam_url     = result.get("jam_url", f"{CSWEB_BASE}/collaborate/{jam_id}")
         n_props     = result.get("propositions_created", 0)
-        seed_errors = result.get("seed_errors", [])
-        all_users   = result.get("matched_users", [])
-        unmatched   = [u for u in all_users if not u.get("matched")]
+        seed_errors       = result.get("seed_errors", [])
+        messages_received = result.get("messages_received", 0)
+        messages_filtered = result.get("messages_filtered", 0)
+        all_users         = result.get("matched_users", [])
+        unmatched         = [u for u in all_users if not u.get("matched")]
+        logger.info(f"Import: {messages_received} msgs in, {messages_filtered} filtered, {n_props} seeds")
         if seed_errors:
             logger.error(f"Seed errors from API: {seed_errors}")
 
@@ -158,9 +161,11 @@ async def _build_jam_modal(
             "gci_pid":       gci_pid,
             "display_name":  user_profile.get("real_name", user_id),
             "email":         user_profile.get("email", ""),
-            "n_props":       n_props,
-            "unmatched":     unmatched[:5],
-            "seed_errors":   seed_errors[:3],
+            "n_props":            n_props,
+            "unmatched":          unmatched[:5],
+            "seed_errors":        seed_errors[:3],
+            "messages_received":  messages_received,
+            "messages_filtered":  messages_filtered,
         })
 
         await client.views_update(
@@ -195,9 +200,11 @@ async def handle_jam_participate(ack, body, client, view):
     gci_pid     = meta.get("gci_pid", GCI_OWNER_ID)
     display_name = meta.get("display_name", "")
     email       = meta.get("email", "")
-    n_props     = meta.get("n_props", 0)
-    unmatched   = meta.get("unmatched", [])
-    seed_errors = meta.get("seed_errors", [])
+    n_props           = meta.get("n_props", 0)
+    unmatched         = meta.get("unmatched", [])
+    seed_errors       = meta.get("seed_errors", [])
+    messages_received = meta.get("messages_received", 0)
+    messages_filtered = meta.get("messages_filtered", 0)
 
     try:
         pct  = float(prob_raw.replace("%", "").strip())
@@ -253,6 +260,8 @@ async def handle_jam_participate(ack, body, client, view):
                 n_props=n_props,
                 unmatched=unmatched,
                 seed_errors=seed_errors,
+                messages_received=messages_received,
+                messages_filtered=messages_filtered,
             ),
             text=f"GCI Jam ready: {prompt_text[:60]} — {jam_url}",
         )
@@ -474,8 +483,11 @@ def _jam_summary_blocks(
     n_props: int,
     unmatched: list[dict],
     seed_errors: list[str] | None = None,
+    messages_received: int = 0,
+    messages_filtered: int = 0,
 ) -> list[dict]:
     seed_status = f"*Propositions seeded:* {n_props}" if n_props > 0 else "*Propositions seeded:* 0 ⚠️"
+    msg_status  = f"*Messages:* {messages_filtered}/{messages_received} used" if messages_received else "*Platform:* Slack"
     blocks: list[dict] = [
         {
             "type": "section",
@@ -488,7 +500,7 @@ def _jam_summary_blocks(
             "type": "section",
             "fields": [
                 {"type": "mrkdwn", "text": seed_status},
-                {"type": "mrkdwn", "text": "*Platform:* Slack"},
+                {"type": "mrkdwn", "text": msg_status},
             ],
         },
         {
