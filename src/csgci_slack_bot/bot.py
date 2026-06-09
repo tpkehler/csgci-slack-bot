@@ -174,8 +174,10 @@ async def _build_jam_modal(
 
 @app.view("jam_participate")
 async def handle_jam_participate(ack, body, client, view):
-    await ack()
+    # Acknowledge immediately with a loading modal — must happen within 3 s
+    await ack(response_action="update", view=_loading_modal("Saving your response…"))
 
+    view_id   = body["view"]["id"]
     values    = view["state"]["values"]
     prob_raw  = (values.get("prob_block", {}).get("prob_input", {}).get("value") or "50").strip()
     reasoning = (values.get("reasoning_block", {}).get("reasoning_input", {}).get("value") or "").strip()
@@ -198,6 +200,7 @@ async def handle_jam_participate(ack, body, client, view):
     except ValueError:
         prob = 0.5
 
+    submitted = False
     if reasoning and jam_id:
         try:
             await gci.submit_response(
@@ -211,9 +214,31 @@ async def handle_jam_participate(ack, body, client, view):
                 reasoning=reasoning,
             )
             n_props += 1
+            submitted = True
         except Exception as exc:
-            logger.warning(f"Modal response submission failed: {exc}")
+            logger.error(f"Modal response submission failed: {exc}")
 
+    # Fetch peer review samples to show in step 2
+    samples: list[dict] = []
+    if jam_id and gci_pid:
+        samples = await gci.get_peer_review_samples(jam_id, reviewer_id=gci_pid, n=5)
+
+    # Update modal to peer review step (or success if no samples yet)
+    try:
+        if samples:
+            await client.views_update(
+                view_id=view_id,
+                view=_peer_review_modal(samples, jam_url),
+            )
+        else:
+            await client.views_update(
+                view_id=view_id,
+                view=_submitted_modal(jam_url, submitted),
+            )
+    except Exception as exc:
+        logger.warning(f"views_update after submission failed: {exc}")
+
+    # Post summary card to channel
     if channel:
         await client.chat_postMessage(
             channel=channel,
@@ -485,6 +510,84 @@ def _jam_summary_blocks(
             },
         })
     return blocks
+
+
+def _peer_review_modal(samples: list[dict], jam_url: str) -> dict:
+    """Step-2 modal: show seed propositions for review, link to web app."""
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*👥 Here's what your colleagues said:*\nReview these perspectives — react in the full Jam to influence the collective score.",
+            },
+        },
+        {"type": "divider"},
+    ]
+    for i, s in enumerate(samples[:5], 1):
+        name  = (s.get("contributor_name") or "Colleague")[:30]
+        text  = (s.get("text") or "")[:300]
+        rating = s.get("probability_estimate") or s.get("contributor_rating")
+        pct_str = f"  _{rating * 100:.0f}% confidence_" if isinstance(rating, (int, float)) else ""
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*{i}. {name}*{pct_str}\n{text}",
+            },
+        })
+    blocks += [
+        {"type": "divider"},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open Full Peer Review →"},
+                    "url": jam_url,
+                    "style": "primary",
+                }
+            ],
+        },
+    ]
+    return {
+        "type": "modal",
+        "callback_id": "jam_peer_review_view",
+        "title": {"type": "plain_text", "text": "GCI Jam — Peer Review"},
+        "close": {"type": "plain_text", "text": "Done"},
+        "blocks": blocks,
+    }
+
+
+def _submitted_modal(jam_url: str, submitted: bool) -> dict:
+    """Shown after submission when no peer review samples are available yet."""
+    msg = (
+        "✅ *Your response was recorded!*\n\n"
+        "Peer review will appear here once more participants have responded.\n"
+        "Open the full Jam to review others' perspectives as they come in."
+        if submitted else
+        "⚠️ *Submission may not have saved* — please try again in the web app."
+    )
+    return {
+        "type": "modal",
+        "callback_id": "jam_submitted",
+        "title": {"type": "plain_text", "text": "GCI Jam"},
+        "close": {"type": "plain_text", "text": "Done"},
+        "blocks": [
+            {"type": "section", "text": {"type": "mrkdwn", "text": msg}},
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Join Full Jam →"},
+                        "url": jam_url,
+                        "style": "primary",
+                    }
+                ],
+            },
+        ],
+    }
 
 
 def _cv_modal(
