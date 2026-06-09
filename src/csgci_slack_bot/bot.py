@@ -126,11 +126,14 @@ async def _build_jam_modal(
             min_message_length=5,
         )
 
-        jam_id    = result.get("jam_id", "")
-        jam_url   = result.get("jam_url", f"{CSWEB_BASE}/collaborate/{jam_id}")
-        n_props   = result.get("propositions_created", 0)
-        all_users = result.get("matched_users", [])
-        unmatched = [u for u in all_users if not u.get("matched")]
+        jam_id      = result.get("jam_id", "")
+        jam_url     = result.get("jam_url", f"{CSWEB_BASE}/collaborate/{jam_id}")
+        n_props     = result.get("propositions_created", 0)
+        seed_errors = result.get("seed_errors", [])
+        all_users   = result.get("matched_users", [])
+        unmatched   = [u for u in all_users if not u.get("matched")]
+        if seed_errors:
+            logger.error(f"Seed errors from API: {seed_errors}")
 
         # Find the invoking user's GCI participant_id from identity resolution
         invoker   = next((u for u in all_users if u.get("platform_user_id") == user_id), None)
@@ -157,6 +160,7 @@ async def _build_jam_modal(
             "email":         user_profile.get("email", ""),
             "n_props":       n_props,
             "unmatched":     unmatched[:5],
+            "seed_errors":   seed_errors[:3],
         })
 
         await client.views_update(
@@ -193,6 +197,7 @@ async def handle_jam_participate(ack, body, client, view):
     email       = meta.get("email", "")
     n_props     = meta.get("n_props", 0)
     unmatched   = meta.get("unmatched", [])
+    seed_errors = meta.get("seed_errors", [])
 
     try:
         pct  = float(prob_raw.replace("%", "").strip())
@@ -247,6 +252,7 @@ async def handle_jam_participate(ack, body, client, view):
                 jam_url=jam_url,
                 n_props=n_props,
                 unmatched=unmatched,
+                seed_errors=seed_errors,
             ),
             text=f"GCI Jam ready: {prompt_text[:60]} — {jam_url}",
         )
@@ -467,7 +473,9 @@ def _jam_summary_blocks(
     jam_url: str,
     n_props: int,
     unmatched: list[dict],
+    seed_errors: list[str] | None = None,
 ) -> list[dict]:
+    seed_status = f"*Propositions seeded:* {n_props}" if n_props > 0 else "*Propositions seeded:* 0 ⚠️"
     blocks: list[dict] = [
         {
             "type": "section",
@@ -479,7 +487,7 @@ def _jam_summary_blocks(
         {
             "type": "section",
             "fields": [
-                {"type": "mrkdwn", "text": f"*Propositions seeded:* {n_props}"},
+                {"type": "mrkdwn", "text": seed_status},
                 {"type": "mrkdwn", "text": "*Platform:* Slack"},
             ],
         },
@@ -508,6 +516,12 @@ def _jam_summary_blocks(
                 "text": "*These participants don't have a GCI account yet:*\n"
                         + "\n".join(invite_lines),
             },
+        })
+    if seed_errors:
+        err_lines = "\n".join(f"• `{e[:120]}`" for e in seed_errors[:3])
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"⚠️ *Seed errors:*\n{err_lines}"}],
         })
     return blocks
 
