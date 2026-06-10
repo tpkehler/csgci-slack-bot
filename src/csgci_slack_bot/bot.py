@@ -228,6 +228,15 @@ async def handle_seed_review(ack, body, client, view):
 
         invoker      = next((u for u in all_users if u.get("platform_user_id") == user_id), None)
         gci_pid      = invoker.get("gci_participant_id", GCI_OWNER_ID) if invoker else GCI_OWNER_ID
+        # If the invoker wasn't among message senders, resolve via identity API
+        if gci_pid == GCI_OWNER_ID:
+            try:
+                linked = await gci._get(f"/api/identity/lookup?platform=slack&platform_user_id={user_id}")
+                resolved = linked.get("gci_participant_id")
+                if resolved:
+                    gci_pid = resolved
+            except Exception:
+                pass
         user_profile = user_profiles.get(user_id, {})
 
         questions   = await gci.get_questions(jam_id)
