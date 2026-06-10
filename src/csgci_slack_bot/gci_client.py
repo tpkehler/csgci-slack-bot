@@ -165,6 +165,19 @@ class GCIClient:
             logger.warning(f"get_propositions failed: {exc}")
             return []
 
+    async def submit_peer_reviews_batch(
+        self,
+        jam_id: str,
+        reviewer_id: str,
+        reviews: list[dict],
+    ) -> dict:
+        """POST /api/peer-review/submit-batch — submit all peer review sentiments at once."""
+        return await self._post(
+            "/api/peer-review/submit-batch",
+            {"jam_id": jam_id, "reviewer_id": reviewer_id, "reviews": reviews},
+            timeout=30.0,
+        )
+
     # ── BBN / Collective View ─────────────────────────────────────────────────
 
     async def get_bbn(self, jam_id: str) -> dict:
