@@ -8,7 +8,11 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 GCI_API_BASE = os.environ.get("GCI_API_BASE", "https://csgcip.onrender.com").rstrip("/")
 GCI_API_KEY  = os.environ.get("GCI_API_KEY", "")
