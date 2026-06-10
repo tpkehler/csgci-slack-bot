@@ -67,22 +67,71 @@ class GCIClient:
         messages: list[dict],
         title: str = "",
         min_message_length: int = 5,
+        seed_propositions: list[dict] | None = None,
     ) -> dict:
         """
         Call POST /api/jams/import-from-conversation.
 
         messages items: {platform_user_id, display_name, email, text, timestamp}
+        seed_propositions: if provided, skips LLM extraction — [{text, platform_user_id, probability_estimate}]
         Returns: {jam_id, jam_url, propositions_created, matched_users, unmatched_count}
         """
-        return await self._post(
-            "/api/jams/import-from-conversation",
+        body: dict = {
+            "jam_prompt":          prompt,
+            "platform":            platform,
+            "messages":            messages,
+            "owner_id":            owner_id,
+            "custom_title":        title or prompt[:80],
+            "min_message_length":  min_message_length,
+        }
+        if seed_propositions is not None:
+            body["seed_propositions"] = seed_propositions
+        return await self._post("/api/jams/import-from-conversation", body)
+
+    async def extract_propositions(
+        self,
+        *,
+        owner_id: str,
+        prompt: str,
+        platform: str,
+        messages: list[dict],
+        min_message_length: int = 5,
+    ) -> list[dict]:
+        """
+        Preview-only: extract propositions via LLM without creating a jam.
+        Returns [{text, platform_user_id, display_name, probability_estimate}].
+        """
+        data = await self._post(
+            "/api/jams/extract-propositions",
             {
-                "jam_prompt":          prompt,
-                "platform":            platform,
-                "messages":            messages,
-                "owner_id":            owner_id,
-                "custom_title":        title or prompt[:80],
-                "min_message_length":  min_message_length,
+                "jam_prompt":         prompt,
+                "platform":           platform,
+                "messages":           messages,
+                "owner_id":           owner_id,
+                "min_message_length": min_message_length,
+            },
+        )
+        return data.get("propositions", [])
+
+    async def import_messages_to_jam(
+        self,
+        *,
+        jam_id: str,
+        owner_id: str,
+        prompt: str,
+        platform: str,
+        messages: list[dict],
+        min_message_length: int = 5,
+    ) -> dict:
+        """Add new messages to an existing jam (POST /api/jams/{jam_id}/import-messages)."""
+        return await self._post(
+            f"/api/jams/{jam_id}/import-messages",
+            {
+                "jam_prompt":         prompt,
+                "platform":           platform,
+                "messages":           messages,
+                "owner_id":           owner_id,
+                "min_message_length": min_message_length,
             },
         )
 

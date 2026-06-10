@@ -23,6 +23,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+import uuid
 
 from dotenv import load_dotenv
 load_dotenv()  # must run before any module that reads env vars at import time
@@ -44,6 +46,14 @@ THREAD_HISTORY_LIMIT = 50
 
 app = AsyncApp(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 gci = GCIClient()
+
+# In-memory store for seed-review sessions (Feature 1)
+# key: session_id (UUID str) → {messages, gci_messages, prompt, channel, user_id, n_messages}
+_pending_sessions: dict[str, dict] = {}
+
+# In-memory last-engagement timestamps per jam (Feature 2)
+# key: jam_id → Slack message ts of the most recently imported message
+_jam_last_ts: dict[str, str] = {}
 
 
 # ── /jam command ──────────────────────────────────────────────────────────────
@@ -117,13 +127,89 @@ async def _build_jam_modal(
             if m.get("user") and m.get("text")
         ]
 
-        result  = await gci.import_conversation(
+        # Extract propositions first (no DB writes) so creator can review/edit
+        extracted = await gci.extract_propositions(
+            owner_id=GCI_OWNER_ID,
+            prompt=prompt,
+            platform="slack",
+            messages=gci_messages,
+            min_message_length=5,
+        )
+
+        # Stash full context in memory — session_id goes into modal metadata
+        session_id = str(uuid.uuid4())
+        _pending_sessions[session_id] = {
+            "messages":     gci_messages,
+            "prompt":       prompt,
+            "channel":      channel,
+            "user_id":      user_id,
+            "user_profiles": user_profiles,
+        }
+
+        await client.views_update(
+            view_id=view_id,
+            view=_seed_review_modal(session_id, extracted, prompt),
+        )
+
+    except Exception as exc:
+        logger.exception("Failed to build jam modal")
+        await client.views_update(
+            view_id=view_id,
+            view=_error_modal(str(exc)),
+        )
+
+
+@app.view("seed_review")
+async def handle_seed_review(ack, body, client, view):
+    """Creator confirmed/edited seed propositions — now create the jam."""
+    await ack(response_action="update", view=_loading_modal("Creating Jam…"))
+
+    view_id    = body["view"]["id"]
+    meta       = json.loads(view.get("private_metadata", "{}"))
+    session_id = meta.get("session_id", "")
+    n_seeds    = meta.get("n_seeds", 0)
+    session    = _pending_sessions.pop(session_id, None)
+
+    if not session:
+        await client.views_update(
+            view_id=view_id,
+            view=_error_modal("Session expired — please run /jam again."),
+        )
+        return
+
+    prompt      = session["prompt"]
+    channel     = session["channel"]
+    user_id     = session["user_id"]
+    gci_messages = session["messages"]
+    user_profiles = session["user_profiles"]
+
+    # Collect edited propositions from modal inputs
+    values = view.get("state", {}).get("values", {})
+    uid_map = meta.get("uid_map", {})   # {"1": platform_user_id, ...}
+    prob_map = meta.get("prob_map", {}) # {"1": probability_estimate, ...}
+    seed_propositions = []
+    for i in range(1, n_seeds + 1):
+        text = (
+            values.get(f"seed_{i}", {})
+                  .get(f"seed_text_{i}", {})
+                  .get("value") or ""
+        ).strip()
+        if text:
+            seed_propositions.append({
+                "text":                 text,
+                "platform_user_id":     uid_map.get(str(i), ""),
+                "probability_estimate": prob_map.get(str(i), 0.5),
+            })
+
+    try:
+        result = await gci.import_conversation(
             owner_id=GCI_OWNER_ID,
             prompt=prompt,
             platform="slack",
             messages=gci_messages,
             title=prompt[:80],
             min_message_length=5,
+            seed_propositions=seed_propositions if seed_propositions else None,
         )
 
         jam_id      = result.get("jam_id", "")
@@ -134,47 +220,57 @@ async def _build_jam_modal(
         messages_filtered = result.get("messages_filtered", 0)
         all_users         = result.get("matched_users", [])
         unmatched         = [u for u in all_users if not u.get("matched")]
-        logger.info(f"Import: {messages_received} msgs in, {messages_filtered} filtered, {n_props} seeds")
-        if seed_errors:
-            logger.error(f"Seed errors from API: {seed_errors}")
+        logger.info(f"Jam created: {jam_id[:8]} — {n_props} seeds from {len(seed_propositions)} reviewed")
 
-        # Find the invoking user's GCI participant_id from identity resolution
-        invoker   = next((u for u in all_users if u.get("platform_user_id") == user_id), None)
-        gci_pid   = invoker.get("gci_participant_id", GCI_OWNER_ID) if invoker else GCI_OWNER_ID
+        # Track creation timestamp for Feature 2
+        if jam_id and gci_messages:
+            _jam_last_ts[jam_id] = gci_messages[-1].get("timestamp", "")
 
-        # Fetch prompt details
+        invoker      = next((u for u in all_users if u.get("platform_user_id") == user_id), None)
+        gci_pid      = invoker.get("gci_participant_id", GCI_OWNER_ID) if invoker else GCI_OWNER_ID
+        user_profile = user_profiles.get(user_id, {})
+
         questions   = await gci.get_questions(jam_id)
         first_q     = questions[0] if questions else {}
         prompt_id   = first_q.get("id", "")
         prompt_text = first_q.get("text", prompt)
 
-        # Get invoking user's profile
-        user_profile = user_profiles.get(user_id, {})
-
-        meta = json.dumps({
-            "jam_id":        jam_id,
-            "jam_url":       jam_url,
-            "prompt_id":     prompt_id,
-            "prompt_text":   prompt_text,
-            "channel":       channel,
-            "user_id":       user_id,
-            "gci_pid":       gci_pid,
-            "display_name":  user_profile.get("real_name", user_id),
-            "email":         user_profile.get("email", ""),
-            "n_props":            n_props,
-            "unmatched":          unmatched[:5],
-            "seed_errors":        seed_errors[:3],
-            "messages_received":  messages_received,
-            "messages_filtered":  messages_filtered,
+        participate_meta = json.dumps({
+            "jam_id": jam_id, "jam_url": jam_url,
+            "prompt_id": prompt_id, "prompt_text": prompt_text,
+            "channel": channel, "user_id": user_id,
+            "gci_pid": gci_pid,
+            "display_name": user_profile.get("real_name", user_id),
+            "email": user_profile.get("email", ""),
+            "n_props": n_props, "unmatched": unmatched[:5],
+            "seed_errors": seed_errors[:3],
+            "messages_received": messages_received,
+            "messages_filtered": messages_filtered,
         })
 
         await client.views_update(
             view_id=view_id,
-            view=_participate_modal(prompt_text, jam_url, meta),
+            view=_participate_modal(prompt_text, jam_url, participate_meta),
+        )
+
+        # Post channel summary card with interactive Join Jam button
+        await client.chat_postMessage(
+            channel=channel,
+            blocks=_jam_summary_blocks(
+                prompt=prompt_text,
+                jam_url=jam_url,
+                jam_id=jam_id,
+                n_props=n_props,
+                unmatched=unmatched,
+                seed_errors=seed_errors,
+                messages_received=messages_received,
+                messages_filtered=messages_filtered,
+            ),
+            text=f"GCI Jam ready: {prompt_text[:60]} — {jam_url}",
         )
 
     except Exception as exc:
-        logger.exception("Failed to build jam modal")
+        logger.exception("Jam creation after seed review failed")
         await client.views_update(
             view_id=view_id,
             view=_error_modal(str(exc)),
@@ -253,21 +349,7 @@ async def handle_jam_participate(ack, body, client, view):
     except Exception as exc:
         logger.warning(f"views_update after submission failed: {exc}")
 
-    # Post summary card to channel
-    if channel:
-        await client.chat_postMessage(
-            channel=channel,
-            blocks=_jam_summary_blocks(
-                prompt=prompt_text,
-                jam_url=jam_url,
-                n_props=n_props,
-                unmatched=unmatched,
-                seed_errors=seed_errors,
-                messages_received=messages_received,
-                messages_filtered=messages_filtered,
-            ),
-            text=f"GCI Jam ready: {prompt_text[:60]} — {jam_url}",
-        )
+    # Channel summary card is posted in handle_seed_review after jam creation
 
 
 # ── Peer review submission ────────────────────────────────────────────────────
@@ -414,6 +496,119 @@ async def handle_cv_query(ack, body, client, view):
         )
 
 
+# ── Join Jam interactive button ───────────────────────────────────────────────
+
+@app.action("join_jam")
+async def handle_join_jam(ack, body, client):
+    await ack()
+
+    action     = (body.get("actions") or [{}])[0]
+    value      = action.get("value", "")
+    parts      = value.split("|", 1)
+    jam_id     = parts[0] if parts else ""
+    created_ts = parts[1] if len(parts) > 1 else ""
+
+    channel    = body.get("channel", {}).get("id", "")
+    user_id    = body.get("user", {}).get("id", "")
+    trigger_id = body.get("trigger_id", "")
+
+    if not jam_id or not trigger_id:
+        return
+
+    # Open loading modal immediately (trigger_id expires in 3 s)
+    res = await client.views_open(
+        trigger_id=trigger_id,
+        view=_loading_modal("Checking for new ideas\u2026"),
+    )
+    view_id = res["view"]["id"]
+    asyncio.create_task(
+        _build_join_modal(view_id, jam_id, created_ts, channel, user_id, client)
+    )
+
+
+async def _build_join_modal(
+    view_id: str,
+    jam_id: str,
+    created_ts: str,
+    channel: str,
+    user_id: str,
+    client,
+) -> None:
+    try:
+        # Fetch messages newer than last engagement (or jam creation)
+        last_ts = _jam_last_ts.get(jam_id) or created_ts
+        new_messages = await _fetch_channel_messages(channel, client, limit=100, oldest=last_ts)
+        new_messages = [m for m in new_messages if m.get("user") and m.get("text")]
+
+        if new_messages:
+            user_ids = {m["user"] for m in new_messages}
+            profiles = await _fetch_user_profiles(user_ids, client)
+            gci_messages = [
+                {
+                    "platform_user_id": m["user"],
+                    "display_name":     profiles.get(m["user"], {}).get("real_name", m["user"]),
+                    "email":            profiles.get(m["user"], {}).get("email", ""),
+                    "text":             m.get("text", ""),
+                    "timestamp":        m.get("ts", ""),
+                }
+                for m in new_messages
+            ]
+            result = await gci.import_messages_to_jam(
+                jam_id=jam_id,
+                owner_id=GCI_OWNER_ID,
+                prompt="",
+                platform="slack",
+                messages=gci_messages,
+                min_message_length=5,
+            )
+            # Update last-engagement timestamp
+            _jam_last_ts[jam_id] = new_messages[0].get("ts", last_ts)
+            added = result.get("propositions_created", 0)
+            logger.info(f"join_jam: {added} new propositions added to {jam_id[:8]}")
+
+        # Fetch jam questions for the participation modal
+        questions   = await gci.get_questions(jam_id)
+        first_q     = questions[0] if questions else {}
+        prompt_id   = first_q.get("id", "")
+        prompt_text = first_q.get("text", "")
+        jam_url     = f"{CSWEB_BASE}/collaborate/{jam_id}"
+
+        # Resolve this user's GCI participant_id
+        user_profiles = await _fetch_user_profiles({user_id}, client)
+        user_profile  = user_profiles.get(user_id, {})
+        try:
+            linked = await gci._get(f"/api/identity/lookup?platform=slack&platform_user_id={user_id}")
+            gci_pid = linked.get("gci_participant_id", GCI_OWNER_ID)
+        except Exception:
+            gci_pid = GCI_OWNER_ID
+
+        meta = json.dumps({
+            "jam_id":       jam_id,
+            "jam_url":      jam_url,
+            "prompt_id":    prompt_id,
+            "prompt_text":  prompt_text,
+            "channel":      channel,
+            "user_id":      user_id,
+            "gci_pid":      gci_pid,
+            "display_name": user_profile.get("real_name", user_id),
+            "email":        user_profile.get("email", ""),
+            "n_props": 0, "unmatched": [], "seed_errors": [],
+            "messages_received": 0, "messages_filtered": 0,
+        })
+
+        await client.views_update(
+            view_id=view_id,
+            view=_participate_modal(prompt_text, jam_url, meta),
+        )
+
+    except Exception as exc:
+        logger.exception("Failed to build join modal")
+        await client.views_update(
+            view_id=view_id,
+            view=_error_modal(str(exc)),
+        )
+
+
 # ── /jam connect ──────────────────────────────────────────────────────────────
 
 async def _handle_connect(user_id: str, client) -> None:
@@ -429,8 +624,13 @@ async def _handle_connect(user_id: str, client) -> None:
 
 # ── Slack API helpers ─────────────────────────────────────────────────────────
 
-async def _fetch_channel_messages(channel: str, client, limit: int = 50) -> list[dict]:
-    result = await client.conversations_history(channel=channel, limit=limit)
+async def _fetch_channel_messages(
+    channel: str, client, limit: int = 50, oldest: str | None = None
+) -> list[dict]:
+    kwargs: dict = {"channel": channel, "limit": limit}
+    if oldest:
+        kwargs["oldest"] = oldest
+    result = await client.conversations_history(**kwargs)
     return result.get("messages", [])
 
 
@@ -472,6 +672,60 @@ def _error_modal(message: str) -> dict:
         "blocks": [
             {"type": "section", "text": {"type": "mrkdwn", "text": f"❌ {message[:300]}"}},
         ],
+    }
+
+
+def _seed_review_modal(session_id: str, propositions: list[dict], prompt: str) -> dict:
+    """Step-1 modal: creator reviews/edits extracted seed ideas before jam creation."""
+    n = min(len(propositions), 10)
+    uid_map  = {str(i): propositions[i-1].get("platform_user_id", "") for i in range(1, n+1)}
+    prob_map = {str(i): propositions[i-1].get("probability_estimate", 0.5) for i in range(1, n+1)}
+    meta = json.dumps({"session_id": session_id, "n_seeds": n, "uid_map": uid_map, "prob_map": prob_map})
+
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*Review extracted ideas for:*\n_{prompt[:120]}_\n\n"
+                    "Edit any idea text or *clear a field* to remove it before creating the Jam."
+                ),
+            },
+        },
+        {"type": "divider"},
+    ]
+    for i in range(1, n + 1):
+        p    = propositions[i - 1]
+        name = (p.get("display_name") or p.get("platform_user_id") or "Participant")[:30]
+        blocks.append({
+            "type": "input",
+            "block_id": f"seed_{i}",
+            "optional": True,
+            "label": {"type": "plain_text", "text": f"Idea {i} — {name}"},
+            "element": {
+                "type":           "plain_text_input",
+                "action_id":      f"seed_text_{i}",
+                "multiline":      True,
+                "initial_value":  (p.get("text") or "")[:500],
+            },
+            "hint": {"type": "plain_text", "text": "Clear to remove this idea"},
+        })
+
+    if not propositions:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "_No ideas extracted \u2014 the jam will be created and you can add ideas manually._"},
+        })
+
+    return {
+        "type":             "modal",
+        "callback_id":      "seed_review",
+        "private_metadata": meta,
+        "title":            {"type": "plain_text", "text": "GCI Jam \u2014 Review Ideas"},
+        "submit":           {"type": "plain_text", "text": "Create Jam \u2192"},
+        "close":            {"type": "plain_text", "text": "Cancel"},
+        "blocks":           blocks,
     }
 
 
@@ -539,6 +793,7 @@ def _jam_summary_blocks(
     *,
     prompt: str,
     jam_url: str,
+    jam_id: str = "",
     n_props: int,
     unmatched: list[dict],
     seed_errors: list[str] | None = None,
@@ -547,6 +802,7 @@ def _jam_summary_blocks(
 ) -> list[dict]:
     seed_status = f"*Propositions seeded:* {n_props}" if n_props > 0 else "*Propositions seeded:* 0 ⚠️"
     msg_status  = f"*Messages:* {messages_filtered}/{messages_received} used" if messages_received else "*Platform:* Slack"
+    created_ts = str(time.time())
     blocks: list[dict] = [
         {
             "type": "section",
@@ -566,11 +822,17 @@ def _jam_summary_blocks(
             "type": "actions",
             "elements": [
                 {
+                    "type":      "button",
+                    "text":      {"type": "plain_text", "text": "Join Jam in Slack →"},
+                    "action_id": "join_jam",
+                    "value":     f"{jam_id}|{created_ts}",
+                    "style":     "primary",
+                },
+                {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Join Jam →"},
-                    "url": jam_url,
-                    "style": "primary",
-                }
+                    "text": {"type": "plain_text", "text": "Open in Browser"},
+                    "url":  jam_url,
+                },
             ],
         },
     ]
