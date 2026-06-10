@@ -188,6 +188,7 @@ class GCIClient:
             "user_name":            participant_name,
             "user_email":           participant_email,
             "probability_estimate": probability,
+            "prior_belief":         probability,  # keep metadata.prior_belief in sync with user input
             "reasoning_text":       reasoning,
             "question_text":        prompt_text,
             "question_order":       0,
