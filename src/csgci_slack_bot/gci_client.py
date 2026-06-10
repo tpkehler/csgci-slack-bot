@@ -146,32 +146,23 @@ class GCIClient:
 
     # ── Peer review samples ───────────────────────────────────────────────────
 
-    async def get_peer_review_samples(
+    async def get_propositions(
         self,
         jam_id: str,
         reviewer_id: str,
         n: int = 5,
     ) -> list[dict]:
         """
-        Fetch seed propositions for peer review via beta-sampling/generate.
-        Returns a list of {text, contributor_name} dicts, or [] on any failure.
+        Fetch propositions for peer review via GET /api/jams/{jam_id}/propositions.
+        Excludes the reviewer's own propositions. Returns [] on any failure.
         """
         try:
-            data = await self._post(
-                "/api/beta-sampling/generate",
-                {
-                    "jam_id":       jam_id,
-                    "template_id":  jam_id,
-                    "mode":         "exploration",
-                    "lambda_value": 0.0,
-                    "sample_size":  n,
-                    "reviewer_id":  reviewer_id,
-                },
-                timeout=30.0,
-            )
-            return data.get("samples", [])
+            data = await self._get(f"/api/jams/{jam_id}/propositions")
+            all_props = data.get("propositions", [])
+            others = [p for p in all_props if p.get("contributor_id") != reviewer_id]
+            return others[:n]
         except Exception as exc:
-            logger.warning(f"get_peer_review_samples failed: {exc}")
+            logger.warning(f"get_propositions failed: {exc}")
             return []
 
     # ── BBN / Collective View ─────────────────────────────────────────────────
