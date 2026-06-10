@@ -230,23 +230,12 @@ async def handle_jam_participate(ack, body, client, view):
         except Exception as exc:
             logger.error(f"Modal response submission failed: {exc}")
 
-    # Fetch peer review samples to show in step 2
-    samples: list[dict] = []
-    if jam_id and gci_pid:
-        samples = await gci.get_peer_review_samples(jam_id, reviewer_id=gci_pid, n=5)
-
-    # Update modal to peer review step (or success if no samples yet)
+    # Update modal to success — peer review happens via the web link in the channel card
     try:
-        if samples:
-            await client.views_update(
-                view_id=view_id,
-                view=_peer_review_modal(samples, jam_url),
-            )
-        else:
-            await client.views_update(
-                view_id=view_id,
-                view=_submitted_modal(jam_url, submitted),
-            )
+        await client.views_update(
+            view_id=view_id,
+            view=_submitted_modal(jam_url, submitted),
+        )
     except Exception as exc:
         logger.warning(f"views_update after submission failed: {exc}")
 
