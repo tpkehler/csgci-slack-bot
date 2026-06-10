@@ -230,10 +230,13 @@ async def handle_jam_participate(ack, body, client, view):
         except Exception as exc:
             logger.error(f"Modal response submission failed: {exc}")
 
-    # Fetch other participants' propositions for peer review (simple GET, no beta-sampling)
+    # Fetch propositions for peer review — try beta sampling first, fall back to simple GET
     props: list[dict] = []
     if jam_id and gci_pid and submitted:
-        props = await gci.get_propositions(jam_id, reviewer_id=gci_pid, n=5)
+        props = await gci.get_beta_samples(jam_id, reasoning, prob, gci_pid, n=5)
+        if not props:
+            logger.info("Beta sampling returned empty — falling back to GET propositions")
+            props = await gci.get_propositions(jam_id, reviewer_id=gci_pid, n=5)
 
     # Update modal to peer review step (or success if nothing to review yet)
     try:

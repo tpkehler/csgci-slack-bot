@@ -165,6 +165,47 @@ class GCIClient:
             logger.warning(f"get_propositions failed: {exc}")
             return []
 
+    async def get_beta_samples(
+        self,
+        jam_id: str,
+        reasoning: str,
+        probability: float,
+        reviewer_id: str,
+        n: int = 5,
+    ) -> list[dict]:
+        """
+        Call /api/beta-sampling/generate with correct required fields.
+        Maps response to {proposition_id, text, contributor_name, contributor_rating}.
+        Returns [] on failure or timeout so caller can fall back.
+        """
+        try:
+            data = await self._post(
+                "/api/beta-sampling/generate",
+                {
+                    "jam_id":               jam_id,
+                    "user_reasoning":       reasoning,
+                    "probability_estimate": probability,
+                    "reviewer_id":          reviewer_id,
+                    "sample_size":          n,
+                    "mode":                 "exploration",
+                    "lambda_value":         0.5,
+                },
+                timeout=15.0,
+            )
+            return [
+                {
+                    "proposition_id":   s.get("id", ""),
+                    "text":             s.get("text", ""),
+                    "contributor_name": s.get("metadata", {}).get("contributor_name", "Colleague"),
+                    "contributor_rating": None,
+                }
+                for s in data.get("samples", [])
+                if s.get("text")
+            ]
+        except Exception as exc:
+            logger.warning(f"get_beta_samples failed: {exc}")
+            return []
+
     async def submit_peer_reviews_batch(
         self,
         jam_id: str,
